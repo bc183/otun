@@ -43,11 +43,11 @@ func (m *mockConn) SetWriteDeadline(t time.Time) error { return nil }
 
 func TestParseHTTPHost(t *testing.T) {
 	tests := []struct {
-		name        string
-		request     string
-		wantHost    string
-		wantErr     bool
-		wantReplay  bool // whether the returned conn should replay the original bytes
+		name       string
+		request    string
+		wantHost   string
+		wantErr    bool
+		wantReplay bool // whether the returned conn should replay the original bytes
 	}{
 		{
 			name: "simple GET request",

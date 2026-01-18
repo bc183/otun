@@ -2,7 +2,7 @@
 
 # Binary names
 SERVER_BINARY=otun-server
-CLIENT_BINARY=otun-client
+CLIENT_BINARY=otun
 
 # Build directories
 BUILD_DIR=bin

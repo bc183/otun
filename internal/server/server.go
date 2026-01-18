@@ -103,13 +103,14 @@ func (s *Server) runWithTLS() error {
 		HostPolicy: s.hostPolicy,
 	}
 
-	// HTTPS server
+	// HTTPS server (HTTP/1.1 only - HTTP/2 doesn't support connection hijacking
+	// which we need for bidirectional proxying and WebSocket support)
 	httpsServer := &http.Server{
 		Addr:    s.httpsAddr,
 		Handler: s,
 		TLSConfig: &tls.Config{
 			GetCertificate: manager.GetCertificate,
-			NextProtos:     []string{"h2", "http/1.1"},
+			NextProtos:     []string{"http/1.1"},
 		},
 	}
 
