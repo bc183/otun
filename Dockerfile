@@ -17,6 +17,6 @@ RUN apk --no-cache add ca-certificates
 
 COPY --from=builder /otun-server /usr/local/bin/otun-server
 
-EXPOSE 4443 8080
+EXPOSE 4443 8080 8081
 
-CMD ["otun-server", "-control", ":4443", "-public", ":8080"]
+CMD ["otun-server", "-control", ":4443", "-public", ":8080", "-check", ":8081"]

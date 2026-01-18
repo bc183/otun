@@ -12,6 +12,7 @@ import (
 func main() {
 	controlAddr := flag.String("control", ":4443", "Control port address for client connections")
 	publicAddr := flag.String("public", ":8080", "Public port address for incoming traffic")
+	checkAddr := flag.String("check", "", "Check HTTP server address for Caddy on-demand TLS validation (e.g., :8081)")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
@@ -26,7 +27,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	// Create and run server
-	srv := server.New(*controlAddr, *publicAddr)
+	srv := server.New(*controlAddr, *publicAddr, *checkAddr)
 	if err := srv.Run(); err != nil {
 		slog.Error("server error", "error", err)
 		os.Exit(1)

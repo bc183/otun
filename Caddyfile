@@ -1,7 +1,11 @@
 *.tunnel.otun.dev {
-    tls {
-        on_demand
-    }
+	tls {
+		on_demand
+	}
 
-    reverse_proxy otun-server:8080
+	reverse_proxy otun-server:8080
+}
+
+on_demand_tls {
+	ask http://otun-server:8081/check
 }

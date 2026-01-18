@@ -104,7 +104,7 @@ func TestTunnelIntegration(t *testing.T) {
 	t.Log("Local server started")
 
 	// Start tunnel server
-	srv := server.New(controlAddr, publicAddr)
+	srv := server.New(controlAddr, publicAddr, "")
 	go func() {
 		if err := srv.Run(); err != nil {
 			t.Logf("server error: %v", err)
@@ -290,7 +290,7 @@ func TestMultiClientRouting(t *testing.T) {
 	t.Log("Local servers started")
 
 	// Start tunnel server
-	srv := server.New(controlAddr, publicAddr)
+	srv := server.New(controlAddr, publicAddr, "")
 	go func() {
 		if err := srv.Run(); err != nil {
 			t.Logf("server error: %v", err)

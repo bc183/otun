@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +34,7 @@ type tunnelClient struct {
 type Server struct {
 	controlAddr string
 	publicAddr  string
+	checkAddr   string
 	baseURL     string
 
 	controlListener net.Listener
@@ -43,10 +46,11 @@ type Server struct {
 }
 
 // New creates a new tunnel server.
-func New(controlAddr, publicAddr string) *Server {
+func New(controlAddr, publicAddr, checkAddr string) *Server {
 	return &Server{
 		controlAddr: controlAddr,
 		publicAddr:  publicAddr,
+		checkAddr:   checkAddr,
 		baseURL:     fmt.Sprintf("http://%s", publicAddr),
 		clients:     make(map[string]*tunnelClient),
 	}
@@ -70,6 +74,11 @@ func (s *Server) Run() error {
 	}
 	defer s.publicListener.Close()
 	slog.Info("public listener started", "addr", s.publicListener.Addr())
+
+	// Start check HTTP server for Caddy on-demand TLS validation
+	if s.checkAddr != "" {
+		go s.runCheckServer()
+	}
 
 	// Start accepting tunnel clients in a goroutine
 	go s.acceptTunnelClients()
@@ -217,6 +226,48 @@ func (s *Server) removeClient(subdomain string) {
 	delete(s.clients, subdomain)
 	s.mu.Unlock()
 	slog.Info("tunnel unregistered", "subdomain", subdomain)
+}
+
+// runCheckServer starts an HTTP server for Caddy on-demand TLS validation.
+// Caddy calls this endpoint with ?domain=subdomain.tunnel.otun.dev
+// Returns 200 if the subdomain has an active tunnel, 404 otherwise.
+func (s *Server) runCheckServer() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		domain := r.URL.Query().Get("domain")
+		if domain == "" {
+			slog.Debug("check request missing domain")
+			http.Error(w, "missing domain parameter", http.StatusBadRequest)
+			return
+		}
+
+		// Extract subdomain from domain (e.g., "abc123.tunnel.otun.dev" -> "abc123")
+		parts := strings.Split(domain, ".")
+		if len(parts) < 2 {
+			slog.Debug("check request invalid domain", "domain", domain)
+			http.Error(w, "invalid domain", http.StatusBadRequest)
+			return
+		}
+		subdomain := parts[0]
+
+		s.mu.RLock()
+		_, exists := s.clients[subdomain]
+		s.mu.RUnlock()
+
+		if exists {
+			slog.Debug("check passed", "subdomain", subdomain)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		slog.Debug("check failed, no tunnel", "subdomain", subdomain)
+		http.Error(w, "no tunnel for subdomain", http.StatusNotFound)
+	})
+
+	slog.Info("check server started", "addr", s.checkAddr)
+	if err := http.ListenAndServe(s.checkAddr, mux); err != nil {
+		slog.Error("check server error", "error", err)
+	}
 }
 
 // handlePublicConnection handles an incoming public connection by proxying
