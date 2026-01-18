@@ -1,4 +1,4 @@
-# otun
+# otun (Open Tunnel)
 
 A lightweight, open-source ngrok alternative. Expose local services to the internet in seconds.
 
