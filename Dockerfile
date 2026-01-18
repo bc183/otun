@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.23-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
@@ -17,6 +17,10 @@ RUN apk --no-cache add ca-certificates
 
 COPY --from=builder /otun-server /usr/local/bin/otun-server
 
-EXPOSE 4443 8080 8081
+# Create certs directory
+RUN mkdir -p /var/lib/otun/certs
 
-CMD ["otun-server", "-control", ":4443", "-public", ":8080", "-check", ":8081"]
+EXPOSE 4443 443 80
+
+# Default: HTTP-only mode. Override with -domain for TLS.
+CMD ["otun-server", "-control", ":4443", "-http", ":80"]

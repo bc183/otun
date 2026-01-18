@@ -104,7 +104,7 @@ func TestTunnelIntegration(t *testing.T) {
 	t.Log("Local server started")
 
 	// Start tunnel server
-	srv := server.New(controlAddr, publicAddr, "")
+	srv := server.New(controlAddr, "", publicAddr, "", "")
 	go func() {
 		if err := srv.Run(); err != nil {
 			t.Logf("server error: %v", err)
@@ -236,29 +236,29 @@ func TestTunnelIntegration(t *testing.T) {
 	})
 
 	t.Run("request without subdomain rejected", func(t *testing.T) {
-		// Request with just localhost (no subdomain) should fail
+		// Request with just localhost (no subdomain) should get 400 Bad Request
 		resp, err := makeRequest("GET", "http://"+publicAddr+"/", "localhost:18080", nil)
-		if err == nil {
-			resp.Body.Close()
-			// Connection should be closed by server, resulting in empty response or error
-			body, _ := io.ReadAll(resp.Body)
-			if len(body) > 0 {
-				t.Errorf("expected request to be rejected, got response: %s", body)
-			}
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
 		}
-		// Error is expected - server closes connection for unknown subdomain
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d", resp.StatusCode)
+		}
 	})
 
 	t.Run("request to unknown subdomain rejected", func(t *testing.T) {
+		// Request with unknown subdomain should get 404 Not Found
 		resp, err := makeRequest("GET", "http://"+publicAddr+"/", "unknown.tunnel.localhost:18080", nil)
-		if err == nil {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if len(body) > 0 {
-				t.Errorf("expected request to be rejected, got response: %s", body)
-			}
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
 		}
-		// Error is expected - server closes connection for unknown subdomain
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d", resp.StatusCode)
+		}
 	})
 }
 
@@ -290,7 +290,7 @@ func TestMultiClientRouting(t *testing.T) {
 	t.Log("Local servers started")
 
 	// Start tunnel server
-	srv := server.New(controlAddr, publicAddr, "")
+	srv := server.New(controlAddr, "", publicAddr, "", "")
 	go func() {
 		if err := srv.Run(); err != nil {
 			t.Logf("server error: %v", err)

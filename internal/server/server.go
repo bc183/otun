@@ -2,19 +2,21 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/bc183/otun/internal/protocol"
 	"github.com/bc183/otun/internal/proxy"
 	"github.com/hashicorp/yamux"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 const (
@@ -33,12 +35,12 @@ type tunnelClient struct {
 // Server is the otun tunnel server.
 type Server struct {
 	controlAddr string
-	publicAddr  string
-	checkAddr   string
-	baseURL     string
+	httpsAddr   string
+	httpAddr    string
+	domain      string
+	certDir     string
 
 	controlListener net.Listener
-	publicListener  net.Listener
 
 	// mu protects the clients map
 	mu      sync.RWMutex
@@ -46,12 +48,13 @@ type Server struct {
 }
 
 // New creates a new tunnel server.
-func New(controlAddr, publicAddr, checkAddr string) *Server {
+func New(controlAddr, httpsAddr, httpAddr, domain, certDir string) *Server {
 	return &Server{
 		controlAddr: controlAddr,
-		publicAddr:  publicAddr,
-		checkAddr:   checkAddr,
-		baseURL:     fmt.Sprintf("http://%s", publicAddr),
+		httpsAddr:   httpsAddr,
+		httpAddr:    httpAddr,
+		domain:      domain,
+		certDir:     certDir,
 		clients:     make(map[string]*tunnelClient),
 	}
 }
@@ -67,31 +70,160 @@ func (s *Server) Run() error {
 	defer s.controlListener.Close()
 	slog.Info("control listener started", "addr", s.controlListener.Addr())
 
-	// Start public listener for incoming traffic
-	s.publicListener, err = net.Listen("tcp", s.publicAddr)
-	if err != nil {
-		return fmt.Errorf("failed to listen on public port %s: %w", s.publicAddr, err)
-	}
-	defer s.publicListener.Close()
-	slog.Info("public listener started", "addr", s.publicListener.Addr())
-
-	// Start check HTTP server for Caddy on-demand TLS validation
-	if s.checkAddr != "" {
-		go s.runCheckServer()
-	}
-
 	// Start accepting tunnel clients in a goroutine
 	go s.acceptTunnelClients()
 
-	// Accept and handle public connections
-	for {
-		publicConn, err := s.publicListener.Accept()
-		if err != nil {
-			slog.Error("failed to accept public connection", "error", err)
-			continue
-		}
+	// If no domain configured, run HTTP-only mode (for local testing)
+	if s.domain == "" {
+		return s.runHTTPOnly()
+	}
 
-		go s.handlePublicConnection(publicConn)
+	// Run with TLS
+	return s.runWithTLS()
+}
+
+// runHTTPOnly runs the server without TLS (for local testing).
+func (s *Server) runHTTPOnly() error {
+	slog.Info("running in HTTP-only mode (no TLS)", "addr", s.httpAddr)
+
+	server := &http.Server{
+		Addr:    s.httpAddr,
+		Handler: s,
+	}
+
+	return server.ListenAndServe()
+}
+
+// runWithTLS runs the server with automatic TLS via Let's Encrypt.
+func (s *Server) runWithTLS() error {
+	// Setup autocert manager
+	manager := &autocert.Manager{
+		Prompt:     autocert.AcceptTOS,
+		Cache:      autocert.DirCache(s.certDir),
+		HostPolicy: s.hostPolicy,
+	}
+
+	// HTTPS server
+	httpsServer := &http.Server{
+		Addr:    s.httpsAddr,
+		Handler: s,
+		TLSConfig: &tls.Config{
+			GetCertificate: manager.GetCertificate,
+			NextProtos:     []string{"h2", "http/1.1"},
+		},
+	}
+
+	// HTTP server for ACME challenges and redirect
+	httpServer := &http.Server{
+		Addr:    s.httpAddr,
+		Handler: manager.HTTPHandler(http.HandlerFunc(s.redirectToHTTPS)),
+	}
+
+	// Start HTTP server in background
+	go func() {
+		slog.Info("HTTP server started (ACME challenges + redirect)", "addr", s.httpAddr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("HTTP server error", "error", err)
+		}
+	}()
+
+	// Start HTTPS server
+	slog.Info("HTTPS server started", "addr", s.httpsAddr, "domain", "*."+s.domain)
+	return httpsServer.ListenAndServeTLS("", "")
+}
+
+// hostPolicy determines which domains we'll accept for TLS certificates.
+// Only issues certs for subdomains that have active tunnels.
+func (s *Server) hostPolicy(ctx context.Context, host string) error {
+	subdomain := extractSubdomain(host)
+	if subdomain == "" {
+		return fmt.Errorf("invalid host: %s", host)
+	}
+
+	s.mu.RLock()
+	_, exists := s.clients[subdomain]
+	s.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("no tunnel registered for subdomain: %s", subdomain)
+	}
+
+	slog.Info("allowing certificate for", "host", host, "subdomain", subdomain)
+	return nil
+}
+
+// redirectToHTTPS redirects HTTP requests to HTTPS.
+func (s *Server) redirectToHTTPS(w http.ResponseWriter, r *http.Request) {
+	target := "https://" + r.Host + r.URL.RequestURI()
+	http.Redirect(w, r, target, http.StatusMovedPermanently)
+}
+
+// ServeHTTP implements http.Handler to route incoming HTTP requests to tunnels.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	host := r.Host
+	subdomain := extractSubdomain(host)
+
+	if subdomain == "" {
+		slog.Warn("no subdomain in request", "host", host)
+		http.Error(w, "No subdomain specified", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.RLock()
+	client := s.clients[subdomain]
+	s.mu.RUnlock()
+
+	if client == nil {
+		slog.Warn("no tunnel found for subdomain", "subdomain", subdomain, "host", host)
+		http.Error(w, fmt.Sprintf("No tunnel found for subdomain: %s", subdomain), http.StatusNotFound)
+		return
+	}
+
+	// Open a new stream to the tunnel client
+	stream, err := client.session.OpenStream()
+	if err != nil {
+		slog.Error("failed to open stream", "error", err)
+		http.Error(w, "Failed to connect to tunnel", http.StatusBadGateway)
+		return
+	}
+	defer stream.Close()
+
+	slog.Info("routing to tunnel", "subdomain", subdomain, "method", r.Method, "path", r.URL.Path)
+
+	// Hijack the connection to get raw TCP access
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		slog.Error("response writer does not support hijacking")
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	clientConn, buf, err := hijacker.Hijack()
+	if err != nil {
+		slog.Error("failed to hijack connection", "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer clientConn.Close()
+
+	// Write the original request to the tunnel stream
+	if err := r.Write(stream); err != nil {
+		slog.Error("failed to write request to tunnel", "error", err)
+		return
+	}
+
+	// Check if there's buffered data from the hijack
+	if buf.Reader.Buffered() > 0 {
+		buffered := make([]byte, buf.Reader.Buffered())
+		buf.Read(buffered)
+		stream.Write(buffered)
+	}
+
+	// Proxy bidirectionally
+	if err := proxy.Bidirectional(clientConn, stream); err != nil {
+		slog.Debug("proxy completed", "error", err)
+	} else {
+		slog.Debug("proxy completed", "subdomain", subdomain)
 	}
 }
 
@@ -177,8 +309,14 @@ func (s *Server) handleTunnelClient(conn net.Conn) {
 
 	slog.Info("tunnel registered", "subdomain", subdomain, "remote_addr", conn.RemoteAddr())
 
-	// Send registered message
-	url := fmt.Sprintf("%s", s.baseURL) // Phase 4 will add subdomain routing
+	// Build the URL for the client
+	var url string
+	if s.domain != "" {
+		url = fmt.Sprintf("https://%s.%s", subdomain, s.domain)
+	} else {
+		url = fmt.Sprintf("http://%s.localhost%s", subdomain, s.httpAddr)
+	}
+
 	if err := controlStream.SendRegistered(url, subdomain); err != nil {
 		slog.Error("failed to send registered message", "error", err)
 		s.removeClient(subdomain)
@@ -196,10 +334,6 @@ func (s *Server) handleControlStream(client *tunnelClient) {
 	defer client.session.Close()
 
 	for {
-		// Set read deadline for heartbeat timeout
-		// Note: yamux streams don't support SetReadDeadline directly,
-		// so we rely on the session's keepalive or manual timeout checking
-
 		msg, err := client.controlStream.ReadMessage()
 		if err != nil {
 			slog.Info("control stream closed", "subdomain", client.subdomain, "error", err)
@@ -226,97 +360,6 @@ func (s *Server) removeClient(subdomain string) {
 	delete(s.clients, subdomain)
 	s.mu.Unlock()
 	slog.Info("tunnel unregistered", "subdomain", subdomain)
-}
-
-// runCheckServer starts an HTTP server for Caddy on-demand TLS validation.
-// Caddy calls this endpoint with ?domain=subdomain.tunnel.otun.dev
-// Returns 200 if the subdomain has an active tunnel, 404 otherwise.
-func (s *Server) runCheckServer() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
-		domain := r.URL.Query().Get("domain")
-		if domain == "" {
-			slog.Debug("check request missing domain")
-			http.Error(w, "missing domain parameter", http.StatusBadRequest)
-			return
-		}
-
-		// Extract subdomain from domain (e.g., "abc123.tunnel.otun.dev" -> "abc123")
-		parts := strings.Split(domain, ".")
-		if len(parts) < 2 {
-			slog.Debug("check request invalid domain", "domain", domain)
-			http.Error(w, "invalid domain", http.StatusBadRequest)
-			return
-		}
-		subdomain := parts[0]
-
-		s.mu.RLock()
-		_, exists := s.clients[subdomain]
-		s.mu.RUnlock()
-
-		if exists {
-			slog.Debug("check passed", "subdomain", subdomain)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		slog.Debug("check failed, no tunnel", "subdomain", subdomain)
-		http.Error(w, "no tunnel for subdomain", http.StatusNotFound)
-	})
-
-	slog.Info("check server started", "addr", s.checkAddr)
-	if err := http.ListenAndServe(s.checkAddr, mux); err != nil {
-		slog.Error("check server error", "error", err)
-	}
-}
-
-// handlePublicConnection handles an incoming public connection by proxying
-// it through a yamux stream to the tunnel client.
-func (s *Server) handlePublicConnection(publicConn net.Conn) {
-	slog.Info("public connection accepted", "remote_addr", publicConn.RemoteAddr())
-
-	// Parse HTTP headers to get Host
-	host, conn, err := parseHTTPHost(publicConn)
-	if err != nil {
-		slog.Warn("failed to parse HTTP request", "error", err)
-		publicConn.Close()
-		return
-	}
-
-	subdomain := extractSubdomain(host)
-	if subdomain == "" {
-		slog.Warn("no subdomain in request", "host", host)
-		publicConn.Close()
-		return
-	}
-
-	// Look up client by subdomain
-	s.mu.RLock()
-	client := s.clients[subdomain]
-	s.mu.RUnlock()
-
-	if client == nil {
-		slog.Warn("no tunnel found for subdomain", "subdomain", subdomain, "host", host)
-		publicConn.Close()
-		return
-	}
-
-	// Open a new stream to the tunnel client
-	stream, err := client.session.OpenStream()
-	if err != nil {
-		slog.Error("failed to open stream", "error", err)
-		publicConn.Close()
-		return
-	}
-
-	slog.Info("routing to tunnel", "stream_id", stream.StreamID(), "subdomain", client.subdomain, "host", host)
-
-	// Proxy traffic between parsed connection and stream
-	if err := proxy.Bidirectional(conn, stream); err != nil {
-		slog.Info("proxy completed", "error", err)
-	} else {
-		slog.Info("proxy completed", "stream_id", stream.StreamID())
-	}
 }
 
 // generateSubdomain generates a random 8-character alphanumeric subdomain.
