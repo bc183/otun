@@ -1,0 +1,64 @@
+version: 2
+
+project_name: otun
+
+builds:
+  - id: otun-client
+    main: ./cmd/client
+    binary: otun-client
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+  - id: otun-server
+    main: ./cmd/server
+    binary: otun-server
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: client
+    builds:
+      - otun-client
+    name_template: "otun-client_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+  - id: server
+    builds:
+      - otun-server
+    name_template: "otun-server_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: bc183
+    name: otun
+  draft: false
+  prerelease: auto

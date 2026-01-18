@@ -1,0 +1,7 @@
+*.tunnel.otun.dev {
+    tls {
+        on_demand
+    }
+
+    reverse_proxy otun-server:8080
+}

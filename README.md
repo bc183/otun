@@ -6,61 +6,120 @@ A lightweight, open-source tunnel that exposes local services to the public inte
 
 - **Reverse tunneling** - Expose localhost to the internet through NAT/firewalls
 - **Stream multiplexing** - Multiple concurrent requests over a single TCP connection
+- **Subdomain routing** - Multiple clients with unique subdomains
 - **Control protocol** - JSON-based registration and heartbeat system
 - **Zero dependencies on external services** - Self-host everything
 
 ## Quick Start
 
-### Build
+### Install Client
+
+**Download binary (Linux/macOS/Windows):**
 
 ```bash
-make build
+# Linux (amd64)
+curl -LO https://github.com/bc183/otun/releases/latest/download/otun-client_linux_amd64.tar.gz
+tar xzf otun-client_linux_amd64.tar.gz
+
+# macOS (Apple Silicon)
+curl -LO https://github.com/bc183/otun/releases/latest/download/otun-client_darwin_arm64.tar.gz
+tar xzf otun-client_darwin_arm64.tar.gz
+
+# macOS (Intel)
+curl -LO https://github.com/bc183/otun/releases/latest/download/otun-client_darwin_amd64.tar.gz
+tar xzf otun-client_darwin_amd64.tar.gz
 ```
 
-### Run the Server
-
-Start the tunnel server on a publicly accessible machine:
+**Or with Go:**
 
 ```bash
-./bin/otun-server -control :4443 -public :8080
+go install github.com/bc183/otun/cmd/client@latest
 ```
 
-- `-control` - Port for tunnel clients to connect (default: `:4443`)
-- `-public` - Port for public HTTP traffic (default: `:8080`)
-
-### Run the Client
-
-On your local machine, expose a local service:
+**Or build from source:**
 
 ```bash
-./bin/otun-client -server your-server.com:4443 -local localhost:3000
+git clone https://github.com/bc183/otun.git
+cd otun && make build
+# Binary at ./bin/otun-client
 ```
 
-- `-server` - Address of the tunnel server
-- `-local` - Local service to expose (default: `localhost:8080`)
+### Connect to Public Server
 
-Your local service running on port 3000 is now accessible via `your-server.com:8080`.
-
-## How It Works
-
-```
-┌─────────────┐         ┌─────────────┐         ┌─────────────┐
-│   Browser   │ ──────► │ otun-server │ ──────► │ otun-client │
-│             │  HTTP   │  (public)   │  yamux  │             │
-└─────────────┘         └─────────────┘         └─────────────┘
-                                                       │
-                                                       │ HTTP
-                                                       ▼
-                                                ┌─────────────┐
-                                                │ Local       │
-                                                │ Service     │
-                                                └─────────────┘
+```bash
+./bin/otun-client -server tunnel.otun.dev:4443 -local localhost:3000 -subdomain myapp
 ```
 
-1. **Client initiates connection** - The client connects to the server over TCP and establishes a [yamux](https://github.com/hashicorp/yamux) session for multiplexing
-2. **Registration** - Client sends a register message, server responds with tunnel URL
-3. **Traffic forwarding** - When the server receives public HTTP requests, it opens a new yamux stream to the client
-4. **Local proxy** - Client forwards the stream to your local service and returns the response
+Your local service is now accessible at `https://myapp.tunnel.otun.dev`
+
+### Client Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-server` | `localhost:4443` | Tunnel server address |
+| `-local` | `localhost:3000` | Local service to expose |
+| `-subdomain` | (random) | Preferred subdomain |
+| `-debug` | `false` | Enable debug logging |
+
+## Self-Hosting
+
+### Prerequisites
+
+- Server with Docker and Docker Compose
+- Domain with wildcard DNS (`*.tunnel.yourdomain.com` → your server IP)
+
+### Deploy with Docker Compose
+
+1. Download config files:
+
+```bash
+mkdir otun && cd otun
+curl -LO https://raw.githubusercontent.com/bc183/otun/main/docker-compose.yml
+curl -LO https://raw.githubusercontent.com/bc183/otun/main/Caddyfile
+
+# Edit Caddyfile with your domain
+sed -i 's/tunnel.otun.dev/tunnel.yourdomain.com/g' Caddyfile
+```
+
+2. Start services:
+
+```bash
+docker compose up -d
+```
+
+3. Connect clients:
+
+```bash
+otun-client -server yourdomain.com:4443 -local localhost:3000 -subdomain myapp
+# Access at: https://myapp.tunnel.yourdomain.com
+```
+
+### DNS Setup
+
+Create a wildcard A record pointing to your server:
+
+```
+*.tunnel.yourdomain.com  →  A  →  your-server-ip
+```
+
+### Architecture
+
+```
+┌─────────────┐      ┌───────┐      ┌─────────────┐      ┌─────────────┐
+│   Browser   │─────►│ Caddy │─────►│ otun-server │─────►│ otun-client │
+│             │ HTTPS│ (TLS) │ HTTP │             │ yamux│             │
+└─────────────┘      └───────┘      └─────────────┘      └─────────────┘
+                                                                │
+                                                                ▼
+                                                         ┌─────────────┐
+                                                         │   Local     │
+                                                         │   Service   │
+                                                         └─────────────┘
+```
+
+- **Caddy** - Handles TLS termination with automatic HTTPS
+- **otun-server** - Routes requests by subdomain to connected clients
+- **otun-client** - Forwards requests to your local service
 
 ## Development
 
@@ -71,8 +130,12 @@ make build
 # Run tests
 make test
 
-# Clean
-make clean
+# Run locally (no TLS)
+./bin/otun-server -control :4443 -public :8080
+./bin/otun-client -server localhost:4443 -local localhost:3000 -subdomain test
+
+# Test with curl
+curl -H "Host: test.tunnel.localhost" http://localhost:8080/
 ```
 
 ## Project Structure
@@ -87,17 +150,22 @@ otun/
 │   ├── client/         # Client implementation
 │   ├── protocol/       # Control protocol (register, heartbeat)
 │   └── proxy/          # Bidirectional proxy helper
-└── test/               # Integration tests
+├── test/               # Integration tests
+├── Dockerfile          # Server container
+├── docker-compose.yml  # Full deployment stack
+└── Caddyfile           # Caddy reverse proxy config
 ```
 
 ## Roadmap
 
-- [x] Phase 1: Basic TCP tunnel
-- [x] Phase 2: Connection multiplexing (yamux)
-- [x] Phase 3: Control protocol (register, heartbeat)
-- [ ] Phase 4: HTTP-aware routing (Host header, multiple clients)
-- [ ] Phase 5: TLS/HTTPS support
-- [ ] Phase 6: Reconnection, CLI improvements, auth
+- [x] Basic TCP tunnel
+- [x] Connection multiplexing (yamux)
+- [x] Control protocol (register, heartbeat)
+- [x] HTTP routing by Host header
+- [x] TLS/HTTPS (via Caddy)
+- [ ] Automatic reconnection
+- [ ] Authentication
+- [ ] Web UI for request inspection
 
 ## License
 

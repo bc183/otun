@@ -224,17 +224,28 @@ func (s *Server) removeClient(subdomain string) {
 func (s *Server) handlePublicConnection(publicConn net.Conn) {
 	slog.Info("public connection accepted", "remote_addr", publicConn.RemoteAddr())
 
-	// For now, get the first available client (Phase 4 will add Host header routing)
-	s.mu.RLock()
-	var client *tunnelClient
-	for _, c := range s.clients {
-		client = c
-		break
+	// Parse HTTP headers to get Host
+	host, conn, err := parseHTTPHost(publicConn)
+	if err != nil {
+		slog.Warn("failed to parse HTTP request", "error", err)
+		publicConn.Close()
+		return
 	}
+
+	subdomain := extractSubdomain(host)
+	if subdomain == "" {
+		slog.Warn("no subdomain in request", "host", host)
+		publicConn.Close()
+		return
+	}
+
+	// Look up client by subdomain
+	s.mu.RLock()
+	client := s.clients[subdomain]
 	s.mu.RUnlock()
 
 	if client == nil {
-		slog.Warn("no tunnel client connected, rejecting public connection")
+		slog.Warn("no tunnel found for subdomain", "subdomain", subdomain, "host", host)
 		publicConn.Close()
 		return
 	}
@@ -247,10 +258,10 @@ func (s *Server) handlePublicConnection(publicConn net.Conn) {
 		return
 	}
 
-	slog.Info("opened stream to tunnel client", "stream_id", stream.StreamID(), "subdomain", client.subdomain)
+	slog.Info("routing to tunnel", "stream_id", stream.StreamID(), "subdomain", client.subdomain, "host", host)
 
-	// Proxy traffic between public connection and stream
-	if err := proxy.Bidirectional(publicConn, stream); err != nil {
+	// Proxy traffic between parsed connection and stream
+	if err := proxy.Bidirectional(conn, stream); err != nil {
 		slog.Info("proxy completed", "error", err)
 	} else {
 		slog.Info("proxy completed", "stream_id", stream.StreamID())
