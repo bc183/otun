@@ -12,6 +12,7 @@
 *.so
 *.dylib
 bin
+.otun.config.yml
 
 # Test binary, built with `go test -c`
 *.test

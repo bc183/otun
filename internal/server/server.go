@@ -45,10 +45,17 @@ type Server struct {
 	// mu protects the clients map
 	mu      sync.RWMutex
 	clients map[string]*tunnelClient // subdomain -> client
+
+	// apiKeys holds valid API keys (empty = no auth required)
+	apiKeys map[string]struct{}
 }
 
 // New creates a new tunnel server.
-func New(controlAddr, httpsAddr, httpAddr, domain, certDir string) *Server {
+func New(controlAddr, httpsAddr, httpAddr, domain, certDir string, apiKeys []string) *Server {
+	keys := make(map[string]struct{}, len(apiKeys))
+	for _, k := range apiKeys {
+		keys[k] = struct{}{}
+	}
 	return &Server{
 		controlAddr: controlAddr,
 		httpsAddr:   httpsAddr,
@@ -56,7 +63,17 @@ func New(controlAddr, httpsAddr, httpAddr, domain, certDir string) *Server {
 		domain:      domain,
 		certDir:     certDir,
 		clients:     make(map[string]*tunnelClient),
+		apiKeys:     keys,
 	}
+}
+
+// validateToken checks if the provided token is valid.
+func (s *Server) validateToken(token string) bool {
+	if len(s.apiKeys) == 0 {
+		return true // no auth required
+	}
+	_, ok := s.apiKeys[token]
+	return ok
 }
 
 // Run starts the server and blocks until an error occurs.
@@ -278,6 +295,14 @@ func (s *Server) handleTunnelClient(conn net.Conn) {
 	if !ok {
 		slog.Error("expected register message", "got", fmt.Sprintf("%T", msg))
 		controlStream.SendError("expected register message")
+		session.Close()
+		return
+	}
+
+	// Validate API key if authentication is enabled
+	if !s.validateToken(registerMsg.Token) {
+		slog.Warn("invalid API key", "remote_addr", conn.RemoteAddr())
+		controlStream.SendError("invalid or missing API key")
 		session.Close()
 		return
 	}

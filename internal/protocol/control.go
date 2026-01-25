@@ -23,8 +23,8 @@ func NewControlStream(stream io.ReadWriteCloser) *ControlStream {
 }
 
 // SendRegister sends a register message.
-func (c *ControlStream) SendRegister(subdomain string) error {
-	return c.encoder.Encode(NewRegisterMessage(subdomain))
+func (c *ControlStream) SendRegister(subdomain, token string) error {
+	return c.encoder.Encode(NewRegisterMessage(subdomain, token))
 }
 
 // SendRegistered sends a registered message.

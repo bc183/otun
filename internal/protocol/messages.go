@@ -14,6 +14,7 @@ const (
 type RegisterMessage struct {
 	Type      string `json:"type"` // always "register"
 	Subdomain string `json:"subdomain,omitempty"`
+	Token     string `json:"token,omitempty"`
 }
 
 // RegisteredMessage is sent by the server to confirm tunnel registration.
@@ -40,10 +41,11 @@ type ErrorMessage struct {
 }
 
 // NewRegisterMessage creates a register message.
-func NewRegisterMessage(subdomain string) *RegisterMessage {
+func NewRegisterMessage(subdomain, token string) *RegisterMessage {
 	return &RegisterMessage{
 		Type:      TypeRegister,
 		Subdomain: subdomain,
+		Token:     token,
 	}
 }
 

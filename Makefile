@@ -15,8 +15,17 @@ GOFMT=$(GOCMD) fmt
 GOVET=$(GOCMD) vet
 GOMOD=$(GOCMD) mod
 
+# Version info
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+VERSION_PKG=github.com/bc183/otun/internal/version
+
 # Build flags
-LDFLAGS=-ldflags "-s -w"
+LDFLAGS=-ldflags "-s -w \
+	-X $(VERSION_PKG).Version=$(VERSION) \
+	-X $(VERSION_PKG).Commit=$(COMMIT) \
+	-X $(VERSION_PKG).Date=$(DATE)"
 
 ## build: Build both server and client binaries
 build: build-server build-client

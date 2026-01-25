@@ -47,7 +47,7 @@ func TestControlStreamRegister(t *testing.T) {
 	// Client sends register
 	done := make(chan error)
 	go func() {
-		done <- client.SendRegister("mysubdomain")
+		done <- client.SendRegister("mysubdomain", "testtoken")
 	}()
 
 	// Server reads register
@@ -192,7 +192,7 @@ func TestMessageConstructors(t *testing.T) {
 		msg      any
 		wantType string
 	}{
-		{"register", NewRegisterMessage("sub"), TypeRegister},
+		{"register", NewRegisterMessage("sub", "token"), TypeRegister},
 		{"registered", NewRegisteredMessage("http://url", "sub"), TypeRegistered},
 		{"heartbeat", NewHeartbeatMessage(), TypeHeartbeat},
 		{"heartbeat_ack", NewHeartbeatAckMessage(), TypeHeartbeatAck},
