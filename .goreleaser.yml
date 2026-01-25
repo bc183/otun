@@ -16,7 +16,10 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      - -s -w
+      - -X github.com/bc183/otun/internal/version.Version={{.Version}}
+      - -X github.com/bc183/otun/internal/version.Commit={{.Commit}}
+      - -X github.com/bc183/otun/internal/version.Date={{.Date}}
 
   - id: otun-server
     main: ./cmd/server
@@ -29,7 +32,10 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      - -s -w
+      - -X github.com/bc183/otun/internal/version.Version={{.Version}}
+      - -X github.com/bc183/otun/internal/version.Commit={{.Commit}}
+      - -X github.com/bc183/otun/internal/version.Date={{.Date}}
 
 archives:
   - id: client
