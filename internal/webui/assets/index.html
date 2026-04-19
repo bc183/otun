@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>otun inspect</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js" defer></script>
+<script src="/static/alpine.min.js" defer></script>
+</head>
+<body x-data="otun()" x-init="init()">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      otun<span class="sub">/ inspect</span>
+    </div>
+    <div class="tunnel" x-show="tunnelURL" x-cloak>
+      <span class="label">tunnel</span>
+      <a :href="tunnelURL" target="_blank" rel="noopener" x-text="tunnelURL"></a>
+    </div>
+    <label class="live">
+      <input type="checkbox" x-model="autoRefresh"> live
+    </label>
+  </header>
+
+  <section class="filters">
+    <form hx-get="/api/requests"
+          hx-target="#reqlist"
+          hx-trigger="change, input delay:250ms from:find input[name=q]"
+          hx-swap="innerHTML">
+      <select name="method" aria-label="method">
+        <option value="">any method</option>
+        <option>GET</option><option>POST</option><option>PUT</option>
+        <option>PATCH</option><option>DELETE</option><option>HEAD</option><option>OPTIONS</option>
+      </select>
+      <select name="status" aria-label="status class">
+        <option value="">any status</option>
+        <option value="2">2xx · success</option>
+        <option value="3">3xx · redirect</option>
+        <option value="4">4xx · client error</option>
+        <option value="5">5xx · server error</option>
+      </select>
+      <input type="search" name="q" placeholder="filter by path…" autocomplete="off">
+    </form>
+  </section>
+
+  <main class="split">
+    <aside class="list">
+      <div id="reqlist"
+           hx-get="/api/requests"
+           hx-trigger="load, every 2s [document.body.__otun?.autoRefresh ?? true]"
+           hx-swap="innerHTML">
+        <p class="muted pad">loading…</p>
+      </div>
+    </aside>
+
+    <article class="detail" id="detail">
+      <div class="empty">
+        select a request from the list
+      </div>
+    </article>
+  </main>
+</body>
+<script>
+function otun() {
+  return {
+    autoRefresh: true,
+    tunnelURL: "",
+    init() {
+      this.tunnelURL = document.body.dataset.tunnelUrl || "";
+      document.body.__otun = this;
+    }
+  };
+}
+
+// Row active state + JSON highlight after htmx swaps
+document.addEventListener('htmx:afterSwap', (ev) => {
+  const t = ev.target;
+  if (!t) return;
+  if (t.id === 'detail') {
+    // syntax-highlight any body blocks in the detail pane
+    t.querySelectorAll('pre.body[data-json="1"]').forEach(highlightJSON);
+  }
+});
+document.addEventListener('click', (ev) => {
+  const row = ev.target.closest('.row');
+  if (!row) return;
+  document.querySelectorAll('.row.active').forEach(r => r.classList.remove('active'));
+  row.classList.add('active');
+});
+
+function highlightJSON(el) {
+  const src = el.textContent;
+  try { JSON.parse(src); } catch(_) { return; }
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const re = /"(\\.|[^"\\])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
+  el.innerHTML = esc(src).replace(/&quot;/g,'"').replace(re, (m) => {
+    if (/^"/.test(m)) {
+      return m.endsWith(':') || /":\s*$/.test(m)
+        ? '<span class="j-key">' + m.replace(/"/g,'&quot;') + '</span>'
+        : '<span class="j-str">' + m.replace(/"/g,'&quot;') + '</span>';
+    }
+    if (/^(true|false)$/.test(m)) return '<span class="j-bool">'+m+'</span>';
+    if (m === 'null') return '<span class="j-null">'+m+'</span>';
+    return '<span class="j-num">'+m+'</span>';
+  });
+}
+
+async function copyText(btn, selector) {
+  const el = btn.closest('.card').querySelector(selector);
+  if (!el) return;
+  try {
+    await navigator.clipboard.writeText(el.innerText);
+    const old = btn.textContent;
+    btn.textContent = 'copied';
+    setTimeout(() => btn.textContent = old, 1100);
+  } catch (e) {}
+}
+</script>
+</html>

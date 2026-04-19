@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bc183/otun/internal/inspect"
 	"github.com/bc183/otun/internal/protocol"
 	"github.com/bc183/otun/internal/proxy"
 	"github.com/charmbracelet/log"
@@ -38,6 +39,11 @@ type Client struct {
 	// Reconnection settings
 	backoffConfig BackoffConfig
 	reconnect     bool
+
+	// Optional request inspector. When set, handleStream routes each
+	// request through inspect.Capture instead of the raw proxy.
+	inspectStore   inspect.Store
+	inspectOptions inspect.Options
 }
 
 // New creates a new tunnel client.
@@ -77,6 +83,15 @@ func (c *Client) WithReconnect(enabled bool) *Client {
 // WithMaxRetries sets the maximum number of reconnection attempts.
 func (c *Client) WithMaxRetries(maxRetries int) *Client {
 	c.backoffConfig.MaxRetries = maxRetries
+	return c
+}
+
+// WithInspector attaches a request inspector. Every incoming HTTP request
+// will be parsed, forwarded to the local service, and stored for review
+// via the webui. Passing a nil store disables inspection.
+func (c *Client) WithInspector(store inspect.Store, opts inspect.Options) *Client {
+	c.inspectStore = store
+	c.inspectOptions = opts
 	return c
 }
 
@@ -243,8 +258,24 @@ func (c *Client) RunWithReconnect(ctx context.Context) error {
 }
 
 // handleStream handles a single stream by proxying it to the local service.
+// When an inspector is attached, the stream goes through inspect.Capture so
+// the request/response pair is recorded.
 func (c *Client) handleStream(stream *yamux.Stream) {
-	// Read only the first line to log the request (e.g., "GET /path HTTP/1.1")
+	if c.inspectStore != nil {
+		opts := c.inspectOptions
+		if opts.Subdomain == "" {
+			opts.Subdomain = c.assignedSubdomain
+		}
+		if err := inspect.Capture(context.Background(), stream, c.localAddr, c.inspectStore, opts); err != nil {
+			log.Debug("capture completed", "stream_id", stream.StreamID(), "error", err)
+		} else {
+			log.Debug("capture completed", "stream_id", stream.StreamID())
+		}
+		stream.Close()
+		return
+	}
+
+	// Raw passthrough (inspector disabled).
 	reader := bufio.NewReader(stream)
 	requestLine, err := reader.ReadString('\n')
 	if err == nil {
@@ -254,7 +285,6 @@ func (c *Client) handleStream(stream *yamux.Stream) {
 		}
 	}
 
-	// Connect to the local service
 	localConn, err := net.Dial("tcp", c.localAddr)
 	if err != nil {
 		log.Error("failed to connect to local service", "error", err, "local", c.localAddr)
@@ -264,7 +294,6 @@ func (c *Client) handleStream(stream *yamux.Stream) {
 
 	log.Debug("connected to local service", "local", c.localAddr, "stream_id", stream.StreamID())
 
-	// Write the request line we already read
 	if _, err := localConn.Write([]byte(requestLine)); err != nil {
 		log.Debug("failed to write request line to local", "error", err)
 		localConn.Close()
@@ -272,7 +301,6 @@ func (c *Client) handleStream(stream *yamux.Stream) {
 		return
 	}
 
-	// Proxy remaining traffic: combine buffered data with stream
 	streamReader := io.MultiReader(reader, stream)
 	combinedStream := &readerConn{Reader: streamReader, Conn: stream}
 

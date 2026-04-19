@@ -1,0 +1,100 @@
+<div x-data="{tab:'req'}">
+  <div class="detail-head">
+    <span class="method-chip {{.Record.Method}}">{{.Record.Method}}</span>
+    {{if .Record.Status}}<span class="status-chip s{{div .Record.Status 100}}">{{.Record.Status}}</span>{{end}}
+    <span class="path">{{.Record.Path}}</span>
+    <span class="detail-meta">
+      <span>{{.Record.DurationMs}}ms</span>
+      <span class="sep">·</span>
+      <span>{{timefmt .Record.ReceivedAt}}</span>
+    </span>
+  </div>
+
+  {{if .Record.Err}}<div class="notice error">error — {{.Record.Err}}</div>{{end}}
+
+  {{if .Record.Replay}}
+  <div class="replay-banner">
+    <span class="arrow">↻</span>
+    replay of
+    <a href="#" hx-get="/api/requests/{{.Record.OfID}}" hx-target="#detail" hx-swap="innerHTML">{{.Record.OfID}}</a>
+  </div>
+  {{end}}
+
+  <div class="actions">
+    <button class="btn"
+            hx-post="/api/requests/{{.Record.ID}}/replay"
+            hx-target="#detail"
+            hx-swap="innerHTML">↻ replay</button>
+  </div>
+
+  <div class="tabs">
+    <div class="tab" :class="{active: tab==='req'}" @click="tab='req'">request</div>
+    <div class="tab" :class="{active: tab==='resp'}" @click="tab='resp'">response</div>
+  </div>
+
+  <!-- ── REQUEST ── -->
+  <div x-show="tab==='req'">
+    <div class="card">
+      <div class="card-head">
+        headers
+        <span class="count">{{len .Record.ReqHeaders}} + 2</span>
+      </div>
+      <table class="kv">
+        <tr><td class="k">Host</td><td class="v">{{.Record.Host}}</td></tr>
+        <tr><td class="k">Proto</td><td class="v">{{.Record.Proto}}</td></tr>
+        {{range $k, $vs := .Record.ReqHeaders}}{{range $vs}}
+        <tr><td class="k">{{$k}}</td><td class="v">{{.}}</td></tr>
+        {{end}}{{end}}
+      </table>
+    </div>
+
+    {{if eq .Record.ReqReason "upgrade"}}
+      <div class="notice">request body not captured (HTTP Upgrade — passed through raw)</div>
+    {{else if eq .Record.ReqReason "too_large"}}
+      <div class="notice">request body truncated · captured {{len .Record.ReqBody}} of {{.Record.ReqSize}} bytes</div>
+    {{end}}
+
+    {{if .Record.ReqBody}}
+    <div class="card">
+      <div class="card-head">
+        body
+        <button class="copy" onclick="copyText(this, 'pre.body')">copy</button>
+      </div>
+      <pre class="body"{{if isJSON .Record.ReqHeaders}} data-json="1"{{end}}>{{prettyBody .Record.ReqHeaders .Record.ReqBody}}</pre>
+    </div>
+    {{end}}
+  </div>
+
+  <!-- ── RESPONSE ── -->
+  <div x-show="tab==='resp'" x-cloak>
+    <div class="card">
+      <div class="card-head">
+        headers
+        <span class="count">{{len .Record.RespHeaders}}</span>
+      </div>
+      <table class="kv">
+        {{range $k, $vs := .Record.RespHeaders}}{{range $vs}}
+        <tr><td class="k">{{$k}}</td><td class="v">{{.}}</td></tr>
+        {{end}}{{end}}
+      </table>
+    </div>
+
+    {{if eq .Record.RespReason "upgrade"}}
+      <div class="notice">response body not captured (HTTP Upgrade — passed through raw)</div>
+    {{else if eq .Record.RespReason "streamed"}}
+      <div class="notice">live stream (Server-Sent Events) — headers only</div>
+    {{else if eq .Record.RespReason "too_large"}}
+      <div class="notice">response body truncated · captured {{len .Record.RespBody}} of {{.Record.RespSize}} bytes</div>
+    {{end}}
+
+    {{if .Record.RespBody}}
+    <div class="card">
+      <div class="card-head">
+        body
+        <button class="copy" onclick="copyText(this, 'pre.body')">copy</button>
+      </div>
+      <pre class="body"{{if isJSON .Record.RespHeaders}} data-json="1"{{end}}>{{prettyBody .Record.RespHeaders .Record.RespBody}}</pre>
+    </div>
+    {{end}}
+  </div>
+</div>

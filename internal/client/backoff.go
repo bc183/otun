@@ -37,9 +37,9 @@ func DefaultBackoffConfig() BackoffConfig {
 
 // Backoff tracks retry state and calculates delays.
 type Backoff struct {
-	config   BackoffConfig
-	attempt  int
-	rng      *rand.Rand
+	config  BackoffConfig
+	attempt int
+	rng     *rand.Rand
 }
 
 // NewBackoff creates a new Backoff with the given configuration.

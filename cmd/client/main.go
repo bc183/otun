@@ -12,7 +12,9 @@ import (
 	"syscall"
 
 	"github.com/bc183/otun/internal/client"
+	"github.com/bc183/otun/internal/inspect"
 	"github.com/bc183/otun/internal/version"
+	"github.com/bc183/otun/internal/webui"
 	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -26,16 +28,35 @@ var (
 	debug       bool
 	noReconnect bool
 	maxRetries  int
+
+	inspectEnabled    bool
+	noInspect         bool
+	inspectAddr       string
+	inspectStore      string
+	inspectDB         string
+	inspectMaxRecords int
+	inspectMaxBody    int
 )
+
+// InspectConfig mirrors the `inspect:` section of the YAML config.
+type InspectConfig struct {
+	Enabled    *bool  `yaml:"enabled"`
+	Addr       string `yaml:"addr"`
+	Store      string `yaml:"store"`
+	DB         string `yaml:"db"`
+	MaxRecords *int   `yaml:"max_records"`
+	MaxBody    *int   `yaml:"max_body"`
+}
 
 // Config represents the client configuration file.
 type Config struct {
-	Server     string `yaml:"server"`
-	Token      string `yaml:"token"`
-	Subdomain  string `yaml:"subdomain"`
-	Debug      *bool  `yaml:"debug"`
-	Reconnect  *bool  `yaml:"reconnect"`
-	MaxRetries *int   `yaml:"max_retries"`
+	Server     string         `yaml:"server"`
+	Token      string         `yaml:"token"`
+	Subdomain  string         `yaml:"subdomain"`
+	Debug      *bool          `yaml:"debug"`
+	Reconnect  *bool          `yaml:"reconnect"`
+	MaxRetries *int           `yaml:"max_retries"`
+	Inspect    *InspectConfig `yaml:"inspect"`
 }
 
 // loadConfig loads configuration from the config file.
@@ -102,6 +123,13 @@ Examples:
 	httpCmd.Flags().BoolVar(&noReconnect, "no-reconnect", false, "Disable automatic reconnection")
 	httpCmd.Flags().IntVar(&maxRetries, "max-retries", 0, "Maximum reconnection attempts (0 = unlimited)")
 
+	httpCmd.Flags().BoolVar(&noInspect, "no-inspect", false, "Disable the local inspect UI")
+	httpCmd.Flags().StringVar(&inspectAddr, "inspect-addr", "127.0.0.1:4040", "Address for the inspect UI")
+	httpCmd.Flags().StringVar(&inspectStore, "inspect-store", "memory", "Inspect storage backend: memory | sqlite")
+	httpCmd.Flags().StringVar(&inspectDB, "inspect-db", "", "Path to SQLite DB when --inspect-store=sqlite (default: ~/.otun/inspect.db)")
+	httpCmd.Flags().IntVar(&inspectMaxRecords, "inspect-max-records", 500, "Maximum captured requests to keep in memory (memory store only; sqlite keeps everything)")
+	httpCmd.Flags().IntVar(&inspectMaxBody, "inspect-max-body", 1<<20, "Maximum bytes of each request/response body to capture")
+
 	rootCmd.AddCommand(httpCmd)
 	rootCmd.AddCommand(versionCmd)
 
@@ -137,7 +165,28 @@ func runHTTP(cmd *cobra.Command, args []string) {
 		if cfg.MaxRetries != nil && !cmd.Flags().Changed("max-retries") {
 			maxRetries = *cfg.MaxRetries
 		}
+		if ic := cfg.Inspect; ic != nil {
+			if ic.Enabled != nil && !cmd.Flags().Changed("no-inspect") {
+				noInspect = !*ic.Enabled
+			}
+			if ic.Addr != "" && !cmd.Flags().Changed("inspect-addr") {
+				inspectAddr = ic.Addr
+			}
+			if ic.Store != "" && !cmd.Flags().Changed("inspect-store") {
+				inspectStore = ic.Store
+			}
+			if ic.DB != "" && !cmd.Flags().Changed("inspect-db") {
+				inspectDB = ic.DB
+			}
+			if ic.MaxRecords != nil && !cmd.Flags().Changed("inspect-max-records") {
+				inspectMaxRecords = *ic.MaxRecords
+			}
+			if ic.MaxBody != nil && !cmd.Flags().Changed("inspect-max-body") {
+				inspectMaxBody = *ic.MaxBody
+			}
+		}
 	}
+	inspectEnabled = !noInspect
 
 	// Setup logging
 	if debug {
@@ -169,6 +218,42 @@ func runHTTP(cmd *cobra.Command, args []string) {
 		c = c.WithToken(token)
 	}
 
+	// Optional: inspect UI.
+	if inspectEnabled {
+		store, err := buildInspectStore()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "inspect: %v\n", err)
+			os.Exit(1)
+		}
+		defer store.Close()
+
+		opts := inspect.Options{
+			MaxReqBody:  inspectMaxBody,
+			MaxRespBody: inspectMaxBody,
+		}
+		c = c.WithInspector(store, opts)
+
+		uiSrv, err := webui.New(webui.Config{
+			Addr:  inspectAddr,
+			Store: store,
+			Replayer: &inspect.Replayer{
+				Store:     store,
+				LocalAddr: localAddr,
+				Options:   opts,
+			},
+			TunnelURL: c.TunnelURL,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "inspect: %v\n", err)
+			os.Exit(1)
+		}
+		go func() {
+			if err := uiSrv.Run(ctx); err != nil && err != context.Canceled {
+				log.Warn("inspect UI error", "error", err)
+			}
+		}()
+	}
+
 	// Run with reconnection support
 	err = c.RunWithReconnect(ctx)
 
@@ -180,5 +265,30 @@ func runHTTP(cmd *cobra.Command, args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// buildInspectStore constructs the inspect.Store chosen by flags/config.
+func buildInspectStore() (inspect.Store, error) {
+	switch strings.ToLower(inspectStore) {
+	case "", "memory", "mem":
+		return inspect.NewMemoryStore(inspectMaxRecords), nil
+	case "sqlite", "sqlite3":
+		path := inspectDB
+		if path == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("resolve home dir: %w", err)
+			}
+			path = filepath.Join(home, ".otun", "inspect.db")
+		}
+		if dir := filepath.Dir(path); dir != "." && dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, fmt.Errorf("create db dir: %w", err)
+			}
+		}
+		return inspect.NewSQLiteStore(path)
+	default:
+		return nil, fmt.Errorf("unknown inspect store %q (want memory or sqlite)", inspectStore)
 	}
 }

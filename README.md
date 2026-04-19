@@ -45,6 +45,12 @@ otun version                      # Show version info
 | `--debug` | `-d` | `false` | Show debug logs |
 | `--no-reconnect` | | `false` | Disable automatic reconnection |
 | `--max-retries` | | `0` | Max reconnection attempts (0 = unlimited) |
+| `--no-inspect` | | `false` | Disable the local inspect UI |
+| `--inspect-addr` | | `127.0.0.1:4040` | Address for the inspect UI |
+| `--inspect-store` | | `memory` | Storage backend: `memory` or `sqlite` |
+| `--inspect-db` | | `~/.otun/inspect.db` | SQLite path (when `--inspect-store=sqlite`) |
+| `--inspect-max-records` | | `500` | Rolling-buffer size (memory store only; sqlite persists everything) |
+| `--inspect-max-body` | | `1048576` | Max bytes of each body to capture (1 MiB) |
 
 ## Config File
 
@@ -57,9 +63,45 @@ subdomain: myapp
 debug: false
 reconnect: true
 max_retries: 0
+
+inspect:
+  enabled: true
+  addr: 127.0.0.1:4040
+  store: memory          # or sqlite
+  db: ~/.otun/inspect.db
+  max_records: 500       # memory store only
+  max_body: 1048576
 ```
 
 CLI flags override config file values.
+
+## Request Inspector
+
+When you run `otun http`, a local inspection UI is served at
+[http://127.0.0.1:4040](http://127.0.0.1:4040). Every request flowing
+through the tunnel is captured with its headers, body, status, and
+duration — filter by method/status/path, open a request to see the full
+request and response, and click **↻ replay** to re-fire it directly against
+your local service.
+
+**In-memory (default):** rolling buffer of the last
+`--inspect-max-records` requests (500 by default). Fast, zero-config,
+discarded on exit.
+
+**SQLite (persistent):** survives restarts and keeps every request.
+
+```bash
+otun http 3000 --inspect-store=sqlite
+# records written to ~/.otun/inspect.db by default; override with --inspect-db
+```
+
+Request and response bodies are captured up to `--inspect-max-body` bytes
+(1 MiB default); larger bodies still pass through to your service
+unchanged, the UI just shows the prefix. WebSocket upgrades and
+`text/event-stream` responses bypass capture and stream through raw.
+
+Disable the inspector with `--no-inspect` or move it off the default port
+with `--inspect-addr=127.0.0.1:9999`.
 
 ## Features
 
@@ -70,6 +112,7 @@ CLI flags override config file values.
 - **Simple** - One command, optional config file
 - **Self-hostable** - Run your own server
 - **WebSocket support** - Full bidirectional streaming
+- **Request inspector** - Local UI to view, filter, and replay captured traffic
 
 ## Self-Hosting
 
@@ -186,7 +229,7 @@ curl -H "Host: test.localhost:8080" http://localhost:8080/
 - [x] Automatic reconnection
 - [x] API key authentication
 - [x] Config file support
-- [ ] Web dashboard
+- [x] Web dashboard (request inspection UI)
 
 ## License
 

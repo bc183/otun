@@ -946,7 +946,7 @@ subdomain: wrongsubdomain
 	cmd := exec.CommandContext(ctx, "../bin/otun", "http", localAddr,
 		"-c", configPath,
 		"-t", "cli-override-token", // Override the wrong token from config
-		"-s", subdomain,            // Override subdomain
+		"-s", subdomain, // Override subdomain
 	)
 	cmd.Env = append(os.Environ(), "HOME="+tmpDir)
 

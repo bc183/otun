@@ -1,0 +1,20 @@
+<div class="list-head">
+  <span>requests</span>
+  <span class="count">{{len .Records}}{{if .Records}} shown{{end}}</span>
+</div>
+{{- if not .Records}}
+<p class="muted pad">no requests yet — make a request to the tunnel URL</p>
+{{- end}}
+{{- range .Records}}
+<div class="row{{if .Replay}} replay{{end}}"
+     hx-get="/api/requests/{{.ID}}"
+     hx-target="#detail"
+     hx-swap="innerHTML"
+     hx-trigger="click">
+  <span class="method {{.Method}}">{{.Method}}</span>
+  <span class="status s{{div .Status 100}}">{{if .Status}}{{.Status}}{{else}}—{{end}}</span>
+  <span class="path" title="{{.Path}}">{{.Path}}</span>
+  <span class="dur">{{.DurationMs}}ms</span>
+  <span class="time">{{timefmt .ReceivedAt}}</span>
+</div>
+{{- end}}
